@@ -1,33 +1,25 @@
 <launch>
     <arg name="auto_trigger" default="true"/>
-
     <arg name="camera_name" default="DAVIS-evo" />
     <arg name="bootstrap_image_topic" default="/events/image_raw" />
     <arg name="events_topic" default="/dvs/events" />
-
+	
     <param name="camera_name" value="$(arg camera_name)" />
     <param name="calib_file" value="$(find dvs_tracking)/parameters/calib/$(arg camera_name).yaml" />
-
     <remap from="events" to="$(arg events_topic)" />
     <remap from="remote_key" to="/evo/remote_key" />
-
     <param name="world_frame_id" value="/world"/>
     <param name="dvs_bootstrap_frame_id" value="/camera_0" />
     <param name="dvs_frame_id" value="/dvs_evo" />
-
     <!-- <remap from="camera_info" to="/dvs/camera_info" /> -->
-
     <param name="min_depth" value="0.4" />
     <param name="max_depth" value="5" />
     <param name="num_depth_cells" value="100" />
-    
     <!-- Angle of view of the DSI (cone) -->
     <param name="fov_virtual_camera_deg" value="80.0" />
-    
     <!-- Number of horizontal/vertical pixels in the DSI -->
     <param name="virtual_width" value="240" />
     <param name="virtual_height" value="180" />
-
     <!-- SVO -->
     <node pkg="svo_ros" type="svo_node" name="svo" clear_params="true" output="screen" >
         <param name="cam0_topic" value="$(arg bootstrap_image_topic)" type="str" />
