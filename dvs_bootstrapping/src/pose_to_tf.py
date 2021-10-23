@@ -66,7 +66,11 @@ class Boostrapper:
 if __name__ == '__main__':
 
     rospy.init_node('pose_to_tf')
+    // 后一个值为缺省
+    // ~source_topic_name launch该节点下的参数
     source_topic_name = rospy.get_param('~source_topic_name', '/dvs/pose')
+    // 两个帧名发送时固定
+    // /camera_0
     tf_frame_name = rospy.get_param('dvs_bootstrap_frame_id', '/dvs_bootstrap')
     tf_world_name = rospy.get_param('world_frame_id', '/world')
     relative_to_first_pose = rospy.get_param('~relative_to_first_pose', True)
