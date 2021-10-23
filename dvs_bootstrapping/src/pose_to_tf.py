@@ -77,7 +77,7 @@ if __name__ == '__main__':
 
     bootstrapper = Boostrapper(
         tf_frame_name, tf_world_name, relative_to_first_pose)
-
+    // 订阅source_topic_name消息，使用 bootstrapper.handle_dvs_pose函数处理
     rospy.Subscriber(source_topic_name,
                      PoseStamped,
                      bootstrapper.handle_dvs_pose)
