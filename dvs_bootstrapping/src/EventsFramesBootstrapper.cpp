@@ -23,6 +23,7 @@ EventsFramesBootstrapper::~EventsFramesBootstrapper() {}
 EventsFramesBootstrapper::EventsFramesBootstrapper(ros::NodeHandle &nh,
                                                    ros::NodeHandle &nhp)
     : Bootstrapper(nh, nhp), it_(nh) {
+    // 这里为什么再读取一遍
     postCameraLoaded();
 
     rate_hz_ = rpg_common_ros::param<int>(nhp, "rate_hz", 25);
@@ -32,6 +33,7 @@ EventsFramesBootstrapper::EventsFramesBootstrapper(ros::NodeHandle &nh,
     CHECK_GE(frame_size_, local_frame_size_);
     enable_visuals_ =
         rpg_common_ros::param<bool>(nhp, "enable_visualizations", false);
+      
     if (enable_visuals_) {
         pub_event_img_ = it_.advertise(
             rpg_common_ros::param<std::string>(nhp, "motion_corrected_topic",
@@ -50,6 +52,7 @@ EventsFramesBootstrapper::EventsFramesBootstrapper(ros::NodeHandle &nh,
 }
 
 void EventsFramesBootstrapper::postCameraLoaded() {
+    // 在订阅相机的回调函数中，订阅warp相关参数
     static int nIt =
         rpg_common_ros::param<int>(nhp_, "unwarp_estimate_n_it", 50);
     static double eps =
@@ -72,6 +75,7 @@ void EventsFramesBootstrapper::postCameraLoaded() {
     eventQueue_.clear();
 
     // Precompute rectification table
+    // 求得 rectified_points_
     evo_utils::camera::precomputeRectificationTable(rectified_points_, cam_);
 }
 
@@ -90,28 +94,31 @@ void EventsFramesBootstrapper::integratingThread() {
         }
     }
 }
-
+// 保持eventQueue_的数量 newest_processed_event_ <= frame_size_
 void EventsFramesBootstrapper::clearEventQueue() {
     if (newest_processed_event_ <= frame_size_) return;
-
     std::lock_guard<std::mutex> lock(data_mutex_);
     eventQueue_.erase(
         eventQueue_.begin(),
         eventQueue_.begin() + (newest_processed_event_ - frame_size_));
 }
 
+// 
 bool EventsFramesBootstrapper::integrateEvents() {
     static cv::Mat img0, img1, warp, event_img;
     static cv::Mat flow_field;
     static std::vector<dvs_msgs::Event> events;
+  
     static size_t min_step_size =
         rpg_common_ros::param<int>(nhp_, "min_step_size", 5000);
     static float events_scale_factor =
         rpg_common_ros::param<float>(nhp_, "events_scale_factor", 7);
+  
     static size_t th_min =
         rpg_common_ros::param<float>(nhp_, "activation_threshold_min", 200);
     static size_t th_patch_size =
         rpg_common_ros::param<int>(nhp_, "activation_threshold_patch_size", 3);
+  
     static size_t median_filter_size =
         rpg_common_ros::param<int>(nhp_, "median_filter_size", 3);
     static bool median_filtering =
@@ -121,42 +128,49 @@ bool EventsFramesBootstrapper::integrateEvents() {
 
     // perform this step in a thread safe manner
     std::lock_guard<std::mutex> lock_events(data_mutex_);
+    // 固定数目
     if (eventQueue_.size() <= frame_size_) return false;
-
+    // newest_processed_event_记录序号
     size_t last_event = eventQueue_.size() - 1;
     if (last_event - newest_processed_event_ < min_step_size) return false;
-
+  
+     /*                 分出帧          */ 
+    //   frame_size_ 50000 local_frame_size_ 10000
+    //   frame0_begin ~ frame0_end  ： frame中的前local_frame_size_个
+    //   frame1_begin ~ frame1_end  ： frame中的后local_frame_size_个
     auto frame0_begin = eventQueue_.end() - frame_size_;
     auto frame0_end = frame0_begin + local_frame_size_;
     auto frame1_begin = eventQueue_.end() - local_frame_size_;
     auto frame1_end = eventQueue_.end() - 1;
     const double dt = (frame1_end->ts - frame0_begin->ts).toSec();
-
+    // img0 img1 event_img 全置为0
     motion_correction::resetMat(img0, sensor_size_, CV_32F);
     motion_correction::resetMat(img1, sensor_size_, CV_32F);
     motion_correction::resetMat(event_img, sensor_size_, CV_32F);
-
+    // 分别画出两帧去噪声后的累积帧
     motion_correction::drawEventsUndistorted(
         frame0_begin, frame0_end, img0, sensor_size_, rectified_points_, false);
-
     motion_correction::drawEventsUndistorted(
         frame1_begin, frame1_end, img1, sensor_size_, rectified_points_, false);
-
+    
+     /*                 得到图像           */ 
+    // 初始化 warp
     static cv::Mat I33 = cv::Mat::eye(3, 3, CV_32F);
     warp = I33;
-
+    // 通过强行分出的两帧 计算warp，进一步计算每个像素点光流
     motion_correction::updateWarp(warp, img0, img1, unwarp_params_);
-
     flow_field = motion_correction::computeFlowFromWarp(warp, dt, sensor_size_,
                                                         rectified_points_);
-
+    // 通过得到的光流补偿，将frame上的事件累积到event_img平面上
     motion_correction::drawEventsMotionCorrectedOpticalFlow(
         frame0_begin, frame1_end, flow_field, event_img, sensor_size_,
         rectified_points_, false);
-
+  
+    /*                 对最终图像的处理           */ 
+    // events_scale_factor = 13.0 也就是每个位置累积事件的最大值
     cv::Mat frame = (255.0 / events_scale_factor) * (event_img);
     frame.convertTo(frame, CV_8U);
-
+    // 中值滤波和自适应阈值
     if (median_filtering)
         evo_utils::geometry::huangMedianFilter(
             frame, frame, cv::Mat(height_, width_, CV_8U, 1),
@@ -167,7 +181,8 @@ bool EventsFramesBootstrapper::integrateEvents() {
         //                       cv::THRESH_BINARY, th_patch_size, -th_min);
         cv::threshold(frame, frame, th_min, 255,
                       cv::ThresholdTypes::THRESH_TOZERO);
-
+    
+  
     ts_ = frame1_end->ts;
     if (enable_visuals_) {
         publishOpticalFlowVectors(flow_field);
@@ -203,11 +218,12 @@ bool EventsFramesBootstrapper::integrateEvents() {
 void EventsFramesBootstrapper::publishEventImage(const cv::Mat &img,
                                                  const ros::Time &ts) {
     static cv_bridge::CvImage cv_event_image;
-
     cv_event_image.encoding = "mono8";
+    // getNumSubscribers 有人定于
     if (pub_event_img_.getNumSubscribers() > 0) {
+        // img 传入 cv_event_image
         img.convertTo(cv_event_image.image, CV_8U);
-
+        // cv_event_image 传入 toImageMsg
         auto aux = cv_event_image.toImageMsg();
         aux->header.stamp = ts;
         pub_event_img_.publish(aux);
@@ -216,8 +232,8 @@ void EventsFramesBootstrapper::publishEventImage(const cv::Mat &img,
 
 void EventsFramesBootstrapper::publishOpticalFlowVectors(
     const cv::Mat &flow_field) {
+  
     if (pub_optical_flow_.getNumSubscribers() <= 0) return;
-
     static cv::Mat disp;
     motion_correction::resetMat(disp, sensor_size_, CV_8UC3);
 
