@@ -13,10 +13,12 @@ namespace dvs_bootstrapping {
 
 Bootstrapper::Bootstrapper(ros::NodeHandle &nh, ros::NodeHandle &nhp)
     : nh_(nh), nhp_(nhp) {
+    // auto_trigger = true
+    // 
     idle_ = !rpg_common_ros::param<bool>(nhp_, "auto_trigger", false);
 
     LOG(INFO) << "Bootstrapper initially idle: " << idle_;
-
+    // 读取
     cam_ = evo_utils::camera::loadPinholeCamera(nh_);
 
     // subscribe / advertise
@@ -25,9 +27,9 @@ Bootstrapper::Bootstrapper(ros::NodeHandle &nh, ros::NodeHandle &nhp)
                                 &Bootstrapper::startCommandCallback, this);
     camera_info_sub_ = nh_.subscribe("camera_info", 1,
                                      &Bootstrapper::cameraInfoCallback, this);
-
+    // 
     remote_key_pub_ = nh_.advertise<std_msgs::String>("remote_key", 1);
-
+    //
     world_frame_id_ = rpg_common_ros::param<std::string>(nh_, "world_frame_id",
                                                          std::string("world"));
     bootstrap_frame_id_ = rpg_common_ros::param(nh_, "dvs_bootstrap_frame_id",
@@ -54,13 +56,12 @@ void Bootstrapper::startCommandCallback(const std_msgs::String::ConstPtr &msg) {
 
 void Bootstrapper::cameraInfoCallback(
     const sensor_msgs::CameraInfo::ConstPtr &msg) {
+    // 静态成员实现只回调一次
     static bool got_camera_info = false;
-
+    
     if (!got_camera_info) {
         cam_.fromCameraInfo(*msg);
-
         postCameraLoaded();
-
         // Currently, done only once
         got_camera_info = true;
     }
@@ -72,8 +73,8 @@ void Bootstrapper::pauseBootstrapper() {
 }
 
 void Bootstrapper::eventCallback(const dvs_msgs::EventArray::ConstPtr &msg) {
-    if (idle_) return;
-
+    // idle_ == true 代表已经bootstrap过，不需要事件了
+    if (idle_ ) return;
     std::lock_guard<std::mutex> lock(data_mutex_);
     eventQueue_.insert(eventQueue_.end(), msg->events.begin(),
                        msg->events.end());
