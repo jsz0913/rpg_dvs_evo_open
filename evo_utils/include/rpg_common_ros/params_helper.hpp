@@ -1,4 +1,5 @@
 /*
+*   通过NodeHandle或其他方式查找参数，返回参数或默认值
  * ros_params_helper.h
  *
  *  Created on: Feb 22, 2013
