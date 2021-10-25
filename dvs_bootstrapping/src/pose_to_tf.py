@@ -55,7 +55,7 @@ class Boostrapper:
         else:
             t = T_w_c[:3, 3]
             q = transformations.quaternion_from_matrix(T_w_c)
-
+        # 相对第一次收到的位姿为参考系，发送到tf   tf_frame_name 和 tf_world_name
         self.br.sendTransform((t[0], t[1], t[2]),
                               (q[0], q[1], q[2], q[3]),
                               msg.header.stamp,
@@ -66,18 +66,18 @@ class Boostrapper:
 if __name__ == '__main__':
 
     rospy.init_node('pose_to_tf')
-    // 后一个值为缺省
-    // ~source_topic_name launch该节点下的参数
+    # 后一个值为缺省
+    # ~source_topic_name launch该节点下的参数
     source_topic_name = rospy.get_param('~source_topic_name', '/dvs/pose')
-    // 两个帧名发送时固定
-    // /camera_0
+    # 两个帧名发送时固定
+    # /camera_0
     tf_frame_name = rospy.get_param('dvs_bootstrap_frame_id', '/dvs_bootstrap')
     tf_world_name = rospy.get_param('world_frame_id', '/world')
     relative_to_first_pose = rospy.get_param('~relative_to_first_pose', True)
 
     bootstrapper = Boostrapper(
         tf_frame_name, tf_world_name, relative_to_first_pose)
-    // 订阅source_topic_name消息，使用 bootstrapper.handle_dvs_pose函数处理
+    # 订阅source_topic_name消息，消息类型为PoseStamped 使用 类对象bootstrapper.handle_dvs_pose函数处理
     rospy.Subscriber(source_topic_name,
                      PoseStamped,
                      bootstrapper.handle_dvs_pose)
