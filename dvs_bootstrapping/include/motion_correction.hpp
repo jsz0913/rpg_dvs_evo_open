@@ -24,6 +24,7 @@ using EventArray = std::vector<dvs_msgs::Event>;
  * @param x number to round to the floor
  *
  * @return rounded value
+ * 向左取整 static inline 静态限定作用范围 避免压栈出栈
  */
 static inline int int_floor(float x) {
     int i = (int)x;     /* truncate */
@@ -36,6 +37,7 @@ static inline int int_floor(float x) {
  * @param arr matrix to reset
  * @param size size of the matrix
  * @param type type of the matrix (default: CV_32F)
+ * 总之返回一个全 0 矩阵
  */
 static inline void resetMat(cv::Mat& arr, const cv::Size& size,
                             int type = CV_32F) {
@@ -61,6 +63,8 @@ class WarpUpdateParams {
                      cv::Size sensor_size)
         : warp_mode(mode),
           num_pyramid_levels(lvls),
+           // 第一个参数为type 解释为 要么到达迭代次数要么达到收敛阈值
+           // nIt 最大迭代次数 eps epsilon值
           criteria(cv::TermCriteria::COUNT + cv::TermCriteria::EPS, nIt, eps),
           sensor_size(sensor_size) {}
 };
