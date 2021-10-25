@@ -32,7 +32,6 @@ class Bootstrapper {
      * @param msg Remote key message
      */
     void startCommandCallback(const std_msgs::String::ConstPtr &msg);
-
     /**
      * Update camera info on callback
      *
@@ -54,7 +53,6 @@ class Bootstrapper {
      * Setup operations to be performed after cam_ has been loaded
      */
     virtual void postCameraLoaded() {}
-
     /**
      * Setup operations to be performed after the bootstrap command has been
      * received.
@@ -72,6 +70,7 @@ class Bootstrapper {
 
     ros::Publisher remote_key_pub_;   ///< to trigger the rest of the
                                       ///< pipeline when needed
+    // 发送到 tf的 world_frame_id_/bootstrap_frame_id_
     std::string world_frame_id_;      ///< The root of the tf system
     std::string bootstrap_frame_id_;  ///< child frame id for bootstrap
 
@@ -79,7 +78,6 @@ class Bootstrapper {
     ros::Subscriber event_sub_;        ///< @see eventCallback
     ros::Subscriber remote_sub_;       ///< @see startCommandCallback
     ros::Subscriber camera_info_sub_;  ///< @see cameraInfoCalback
-
     /**
      * Accumulate incoming events for later processing
      *
