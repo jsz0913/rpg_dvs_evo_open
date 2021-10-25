@@ -71,15 +71,17 @@ class WarpUpdateParams {
 
 /**
  * Initializes warp matrix for the multi-level analysis
- *
+ * 初始化warp矩阵
  * @param warp warp matrix to process
- * @param params optimization parameters (# pyramid levels)
+ * @param params optimization parameters (# pyramid levels) 上层定义的warp相关参数
  */
 void initWarp(cv::Mat& warp, const WarpUpdateParams& params);
 
 /**
  * Estimates the warp the better aligns img0 and img1
- *
+ * 使用图像金字塔，在每一层使用ECC进行对齐，计算warp矩阵（有迭代等参数要求），不同层进行相应缩放
+ * 失败则 3*3 或 2*3 单位矩阵
+ * 仿射变换矩阵 旋转平移缩放 前两列 为 A 后一列为 b  Ax + b
  * @param warp warp estimate
  * @param img0 first frame
  * @param img1 second frame
@@ -96,6 +98,7 @@ void updateWarp(cv::Mat& warp, const cv::Mat& img0, const cv::Mat& img1,
  * @param sensor_size optical flow image size
  * @param rectified_points rectification table
  *
+ * 在矫正点的基础上，通过warp得到相应的位置，根据差值和dt求得每个未矫正点的光流
  * @return computed optical flow
  */
 cv::Mat computeFlowFromWarp(const cv::Mat& warp, double dt,
@@ -104,7 +107,7 @@ cv::Mat computeFlowFromWarp(const cv::Mat& warp, double dt,
 
 /**
  * Draw undistorted events on image
- *
+ * 将矫正后的事件点累积到平面上，可选项为极性
  * @param ev_first iterator to first event
  * @param ev_last last iterator (included)
  * @param out output events frame
