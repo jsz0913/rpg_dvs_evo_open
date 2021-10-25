@@ -25,14 +25,20 @@ class EventsFramesBootstrapper : public Bootstrapper {
     virtual ~EventsFramesBootstrapper();
 
    protected:
+    // 只复写了postCameraLoaded
     void postCameraLoaded() override;
+   
     size_t width_;   ///< image size: width
     size_t height_;  ///< image size: height
     cv::Size sensor_size_;
     std::vector<cv::Point2f> rectified_points_;
+   
     bool keep_frames_ = false;
+   
     std::mutex img_mutex_;
+    
     std::deque<cv::Mat> frames_;  ///< images obtained aggregating events
+   
     int rate_hz_;
     ros::Time ts_;  ///< last timestamped image (last received event)
 
@@ -51,9 +57,10 @@ class EventsFramesBootstrapper : public Bootstrapper {
                                   ///< ROS param: "n_min_events_frames"
     bool enable_visuals_;         ///< whether to publish visuals
                                   ///< ROS param: "enable_visualizations"
+   
     cv::Mat undistort_mapx_;      ///< distorted to undistorted pixels (x)
     cv::Mat undistort_mapy_;      ///< distorted to undistorted pixels (y)
-
+    // motion_correction中的相关参数
     motion_correction::WarpUpdateParams
         unwarp_params_;  /// motion undistortion params
 
