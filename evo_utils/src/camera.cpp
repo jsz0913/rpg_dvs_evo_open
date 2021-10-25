@@ -34,7 +34,7 @@ void precomputeRectificationTable(
 
 image_geometry::PinholeCameraModel loadPinholeCamera(ros::NodeHandle& nh) {
     // Load camera calibration
-    // rpg_common_ros::param 得到 参数 
+    // rpg_common_ros::param 得到 参数 ，见 launch文件 
     const std::string camera_name =
         rpg_common_ros::param<std::string>(nh, "camera_name", "");
     const std::string calib_file =
