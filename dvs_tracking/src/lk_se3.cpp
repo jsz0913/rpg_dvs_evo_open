@@ -154,6 +154,7 @@ void LKSE3::updateTransformation(const int offset, const int N,
     Jres = Vector8::Zero();
     for (auto i = offset; i != offset + N; ++i) {
         const Keypoint &k = keypoints_[i];
+        // 用更新后的T_cur_ref_
         Eigen::Vector3f p = T_cur_ref_ * k.P;
         float u = p[0] / p[2] * fx + cx, v = p[1] / p[2] * fy + cy;
         // const float *new_img = img.ptr<float>(0);
