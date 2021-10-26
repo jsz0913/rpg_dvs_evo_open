@@ -187,18 +187,21 @@ bool EventsFramesBootstrapper::integrateEvents() {
     if (enable_visuals_) {
         publishOpticalFlowVectors(flow_field);
         publishEventImage(frame, ts_);
-
+        // 存储本地
         static const int MAX_IMAGES = rpg_common_ros::param<int>(
             nhp_, "max_events_frames_saved_to_file", 0);
         static const std::string format = rpg_common_ros::param<std::string>(
             nhp_, "events_frames_filename_format",
             "/media/user/data/example/%06d.bmp");
         static int cnt = 0;
+        // 静态实现计算 enable_visuals_ 的次数
         if (cnt < MAX_IMAGES) {
+            // 名字
             static auto f = const_cast<char *>(format.c_str());
             static auto size = std::snprintf(nullptr, 0, f, cnt);
             std::string image_name(size + 1, '\0');
             std::sprintf(&image_name[0], f, cnt);
+          
             cv::imwrite(image_name, frame);
             ++cnt;
         }
@@ -239,27 +242,29 @@ void EventsFramesBootstrapper::publishOpticalFlowVectors(
 
     static const int step = 18;
     static const float scale = 0.04;
-
+  
     cv::Point2f origin;
     cv::Point2f end;
+  
     for (int y = 0; y < flow_field.rows; y += step) {
         for (int x = 0; x < flow_field.cols; x += step) {
             const cv::Vec2f &flow_vec = flow_field.at<cv::Vec2f>(y, x);
-
             origin.x = x;
             origin.y = y;
             end.x = origin.x + scale * flow_vec[0];
             end.y = origin.y + scale * flow_vec[1];
-
+            // disp 画线
             cv::arrowedLine(disp, origin, end, cv::Scalar(0, 0, 255), 1, 8, 0,
                             0.15);
         }
     }
-
+    // mat -> cv_event_image
     static cv_bridge::CvImage cv_event_image;
     cv_event_image.encoding = "bgr8";
     cv_event_image.image = disp;
+    // cv_event_image -> toImageMsg
     auto aux = cv_event_image.toImageMsg();
+  
     pub_optical_flow_.publish(aux);
 }
 
