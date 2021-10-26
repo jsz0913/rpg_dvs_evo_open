@@ -187,6 +187,8 @@ void LKSE3::updateTransformation(const int offset, const int N,
         dx[i] *= weight_functions::Tukey(dx[i] * weight_scale_rot_);
 #endif
     // ref -> cur 
+    // T_cur_ref_是估计值 保存着上一次的结果
+    // x_是当前这次的结果
     T_cur_ref_ *= SE3::exp(dx).matrix();
     x_ += dx;
 }
