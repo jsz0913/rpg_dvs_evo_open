@@ -34,9 +34,11 @@ float bilinear(const float* img, const size_t w, const size_t h, const float x,
     if (px + 1 >= w || py + 1 >= h) return -1.f;
 
     // Load Pixel Values
+    // img 指向第一行第一列 按行存
     const float* addr = img + px + py * w;
+    // p1 p2
+    // p3 p4
     const float p1 = addr[0], p2 = addr[1], p3 = addr[w], p4 = addr[w + 1];
-
     // Compute Weights
     float fx = x - px, fy = y - py, fx1 = 1.0f - fx, fy1 = 1.0f - fy;
 
@@ -61,6 +63,7 @@ float bilinear(const float* img, const size_t w, const size_t h, const float x,
  * @see bilinear
  */
 inline float bilinear(const cv::Mat& img, const float x, const float y) {
+    // 为什么 size_t
     return bilinear((float*)img.data, (size_t)img.cols, (size_t)img.rows, x, y);
 }
 
@@ -82,7 +85,7 @@ inline float bilinear(const cv::Mat& img, const float x, const float y) {
 float nn(const float* img, const size_t w, const size_t h, const float x,
          const float y) {
     if (x < 0 || y < 0) return -1;
-
+    // + 0.5 取整 最近
     size_t px = static_cast<size_t>(x + .5f), py = static_cast<size_t>(y + .5f);
 
     if (px >= w || py >= h) return -1;
