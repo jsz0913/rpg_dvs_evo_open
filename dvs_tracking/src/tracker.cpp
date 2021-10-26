@@ -29,17 +29,26 @@
 #include "evo_utils/main.hpp"
 #include "rpg_common_ros/params_helper.hpp"
 
+//
 using Transformation = kindr::minimal::QuatTransformation;
 using Quaternion = kindr::minimal::RotationQuaternion;
 
+void Tracker::reset() {
+    // idle_ = true 代表闲
+    idle_ = true;
+    events_.clear();
+    poses_.clear();
+    poses_filtered_.clear();
+    cur_ev_ = kf_ev_ = 0;
+}
+
 void Tracker::cameraInfoCallback(const sensor_msgs::CameraInfo::ConstPtr& msg) {
+    // static 只读取一次
     static bool got_camera_info = false;
-
     if (!got_camera_info) {
+        // c_ 代表当前帧处的相机模型
         c_.fromCameraInfo(*msg);
-
         postCameraLoaded();
-
         // Currently, done only once
         got_camera_info = true;
     }
@@ -53,18 +62,19 @@ void Tracker::postCameraLoaded() {
     cx_ = c_.cx();
     cy_ = c_.cy();
     rect_ = cv::Rect(0, 0, width_, height_);
-
+    // fov 计算 
     float fov = 2. * std::atan(c_.fullResolution().width / 2. / c_.fx());
     LOG(INFO) << "Field of view: " << fov / M_PI * 180.;
-
+    // 读取相机信息后 
     new_img_ = cv::Mat(c_.fullResolution(), CV_32F, cv::Scalar(0));
-
+    // 虚拟相机 ref 的 建立
     sensor_msgs::CameraInfo cam_ref = c_.cameraInfo();
     cam_ref.width = nh_.param("virtual_width", c_.fullResolution().width);
     cam_ref.height = nh_.param("virtual_height", c_.fullResolution().height);
+    
     cam_ref.P[0 * 4 + 2] = cam_ref.K[0 * 3 + 2] = 0.5 * (float)cam_ref.width;
     cam_ref.P[1 * 4 + 2] = cam_ref.K[1 * 3 + 2] = 0.5 * (float)cam_ref.height;
-
+    
     float f_ref = nh_.param("fov_virtual_camera_deg", 0.);
     if (f_ref == 0.)
         f_ref = c_.fx();
@@ -72,51 +82,50 @@ void Tracker::postCameraLoaded() {
         const float f_ref_rad = f_ref * CV_PI / 180.0;
         f_ref = 0.5 * (float)cam_ref.width / std::tan(0.5 * f_ref_rad);
     }
+    
     cam_ref.P[0 * 4 + 0] = cam_ref.K[0 * 3 + 0] = f_ref;
     cam_ref.P[1 * 4 + 1] = cam_ref.K[1 * 3 + 1] = f_ref;
+    
     c_ref_.fromCameraInfo(cam_ref);
-
     reset();
 }
+
 
 Tracker::Tracker(ros::NodeHandle& nh, ros::NodeHandle nh_private)
     : nh_(nh),
       nhp_(nh_private),
       it_(nh_),
       tf_(true, ros::Duration(2.))
-
       ,
       cur_ev_(0),
       kf_ev_(0),
       noise_rate_(nhp_.param("noise_rate", 10000))
-
       ,
       frame_size_(nhp_.param("frame_size", 2500)),
       step_size_(nhp_.param("step_size", 2500))
-
       ,
       idle_(true) {
     batch_size_ = nhp_.param("batch_size", 500);
     max_iterations_ = nhp_.param("max_iterations", 100);
     map_blur_ = nhp_.param("map_blur", 5);
-
     pyramid_levels_ = nhp_.param("pyramid_levels", 1);
-
+    // rpg_common_ros::param 的意义
     weight_scale_trans_ =
         rpg_common_ros::param<float>(nhp_, "weight_scale_translation", 0.);
     weight_scale_rot_ =
         rpg_common_ros::param<float>(nhp_, "weight_scale_rotation", 0.);
-
+    
+    // 开始全部单位阵
     T_world_kf_ = T_kf_ref_ = T_ref_cam_ = T_cur_ref_ =
         Eigen::Affine3f::Identity();
-
+    //
     map_ = PointCloud::Ptr(new PointCloud);
     map_local_ = PointCloud::Ptr(new PointCloud);
-
-    // Load camera calibration
+    
+    // Load camera calibration ， 通过相机文件夹
     c_ = evo_utils::camera::loadPinholeCamera(nh);
     postCameraLoaded();
-
+          
     // Setup Subscribers
     event_sub_ = nh_.subscribe("events", 0, &Tracker::eventCallback, this);
     map_sub_ = nh_.subscribe("pointcloud", 0, &Tracker::mapCallback, this);
@@ -128,30 +137,51 @@ Tracker::Tracker(ros::NodeHandle& nh, ros::NodeHandle nh_private)
 
     // Setup Publishers
     poses_pub_ = nh_.advertise<geometry_msgs::PoseStamped>("evo/pose", 0);
-
 #ifdef TRACKER_DEBUG_REFERENCE_IMAGE
     std::thread map_overlap(&Tracker::publishMapOverlapThread, this);
     map_overlap.detach();
 #endif
-
     frame_id_ =
         rpg_common_ros::param(nh_, "dvs_frame_id", std::string("dvs_evo"));
     world_frame_id_ =
         rpg_common_ros::param(nh_, "world_frame_id", std::string("world"));
     auto_trigger_ = rpg_common_ros::param<bool>(nhp_, "auto_trigger", false);
-
+    // 
     std::thread tracker(&Tracker::trackingThread, this);
     tracker.detach();
 }
 
+void Tracker::initialize(const ros::Time& ts) {
+    // bootstrap_frame_id
+    std::string bootstrap_frame_id = rpg_common_ros::param<std::string>(
+        nh_, "dvs_bootstrap_frame_id", std::string("/camera0"));
+    // 读取 bootstrap_frame_id 和 world_frame_id_ 的
+    tf::StampedTransform TF_kf_world ;
+    // TF_kf_world -> T_kf_world
+    Eigen::Affine3d T_kf_world;
+    tf_.lookupTransform(bootstrap_frame_id, world_frame_id_, ts, TF_kf_world);
+    tf::transformTFToEigen(TF_kf_world, T_kf_world);
+    // 接受的是 wolrd to kf
+    T_world_kf_ = T_kf_world.cast<float>().inverse();
+    T_kf_ref_ = Eigen::Affine3f::Identity();
+    T_ref_cam_ = Eigen::Affine3f::Identity();
+    // cur_ev_还没使用的event
+    while (cur_ev_ + 1 < events_.size() &&
+           events_[cur_ev_].ts < TF_kf_world.stamp_)
+        ++cur_ev_;
+
+    updateMap();
+
+    idle_ = false;
+}
+
 void Tracker::trackingThread() {
+    // 
     static ros::Rate r(100);
-
     LOG(INFO) << "Spawned tracking thread.";
-
     while (ros::ok()) {
         r.sleep();
-
+        // 不空闲且keypoints_不为空
         if (!idle_ && keypoints_.size() > 0) {
             estimateTrajectory();
         }
@@ -160,7 +190,6 @@ void Tracker::trackingThread() {
 
 void Tracker::remoteCallback(const std_msgs::String::ConstPtr& msg) {
     const std::string& cmd = msg->data;
-
     if (cmd == "switch")
         initialize(ros::Time(0));
     else if (cmd == "reset")
@@ -171,51 +200,42 @@ void Tracker::remoteCallback(const std_msgs::String::ConstPtr& msg) {
 
 void Tracker::tfCallback(const tf::tfMessagePtr& msgs) {
     if (!idle_) return;
-
+    // track空闲时
     for (auto& msg : msgs->transforms) {
+        // 
         tf::StampedTransform t;
         tf::transformStampedMsgToTF(msg, t);
         tf_.setTransform(t);
     }
 }
 
-void Tracker::initialize(const ros::Time& ts) {
-    std::string bootstrap_frame_id = rpg_common_ros::param<std::string>(
-        nh_, "dvs_bootstrap_frame_id", std::string("/camera0"));
-    tf::StampedTransform TF_kf_world;
-    Eigen::Affine3d T_kf_world;
-    tf_.lookupTransform(bootstrap_frame_id, world_frame_id_, ts, TF_kf_world);
-    tf::transformTFToEigen(TF_kf_world, T_kf_world);
 
-    T_world_kf_ = T_kf_world.cast<float>().inverse();
-    T_kf_ref_ = Eigen::Affine3f::Identity();
-    T_ref_cam_ = Eigen::Affine3f::Identity();
-
-    while (cur_ev_ + 1 < events_.size() &&
-           events_[cur_ev_].ts < TF_kf_world.stamp_)
-        ++cur_ev_;
-
-    updateMap();
-
-    idle_ = false;
-}
-
-void Tracker::reset() {
-    idle_ = true;
-
-    events_.clear();
-    poses_.clear();
-    poses_filtered_.clear();
-    cur_ev_ = kf_ev_ = 0;
+void Tracker::clearEventQueue() {
+    static size_t event_history_size_ = 500000;
+    if (idle_) {
+        if (events_.size() > event_history_size_) {
+            events_.erase(events_.begin(), events_.begin() + events_.size() -
+                                               event_history_size_);
+            cur_ev_ = kf_ev_ = 0;
+        }
+    } else {
+        events_.erase(events_.begin(), events_.begin() + kf_ev_);
+        // 删除kf_ev_个数
+        cur_ev_ -= kf_ev_;
+        kf_ev_ = 0;
+    }
 }
 
 void Tracker::eventCallback(const dvs_msgs::EventArray::ConstPtr& msg) {
+    
     static const bool discard_events_when_idle =
         rpg_common_ros::param<bool>(nhp_, "discard_events_when_idle", false);
 
     std::lock_guard<std::mutex> lock(data_mutex_);
+    
+    // 空闲且空闲时丢弃事件时 丢弃
     if (discard_events_when_idle && idle_) return;
-
+    // 清空一部分吗
     clearEventQueue();
     for (const auto& e : msg->events) events_.push_back(e);
 }
@@ -225,7 +245,7 @@ void Tracker::mapCallback(const sensor_msgs::PointCloud2::ConstPtr& msg) {
         rpg_common_ros::param<int>(nhp_, "min_map_size", 0);
 
     std::lock_guard<std::mutex> lock(data_mutex_);
-
+    // 三条语句传给map_     typedef pcl::PointXYZ Point  pcl::PointCloud<Point> PointCloud;
     pcl::PCLPointCloud2 pcl_pc;
     pcl_conversions::toPCL(*msg, pcl_pc);
     pcl::fromPCLPointCloud2(pcl_pc, *map_);
@@ -234,59 +254,42 @@ void Tracker::mapCallback(const sensor_msgs::PointCloud2::ConstPtr& msg) {
 
     if (map_->size() > min_map_size && auto_trigger_) {
         LOG(INFO) << "Auto-triggering tracking";
-
         // initialize(msg->header.stamp);
         initialize(ros::Time(0));
         auto_trigger_ = false;
     }
 }
 
+// updateMap 更新参考帧相对关键帧的位置 projectMap 来更新可视地图部分 precomputeReferenceFrame 计算关键点及其导数
 void Tracker::updateMap() {
     static size_t min_map_size =
         rpg_common_ros::param<int>(nhp_, "min_map_size", 0);
     static size_t min_n_keypoints =
         rpg_common_ros::param<int>(nhp_, "min_n_keypoints", 0);
-
+    // map点数量也得够
     if (map_->size() <= min_map_size) {
         LOG(WARNING) << "Unreliable map! Can not update map.";
         return;
     }
-
+    // 更新参考帧相对关键帧的位置，重新开始计算 T_ref_cam_
     T_kf_ref_ = T_kf_ref_ * T_ref_cam_;
     T_ref_cam_ = Eigen::Affine3f::Identity();
+    // kf_ev_记录上一次 cur_ev_
     kf_ev_ = cur_ev_;
-
     projectMap();
-
     if (keypoints_.size() < min_n_keypoints) {
         LOG(WARNING) << "Losing track!";
         // TODO: do something about it
     }
 }
 
-void Tracker::clearEventQueue() {
-    static size_t event_history_size_ = 500000;
-
-    if (idle_) {
-        if (events_.size() > event_history_size_) {
-            events_.erase(events_.begin(), events_.begin() + events_.size() -
-                                               event_history_size_);
-
-            cur_ev_ = kf_ev_ = 0;
-        }
-    } else {
-        events_.erase(events_.begin(), events_.begin() + kf_ev_);
-
-        cur_ev_ -= kf_ev_;
-        kf_ev_ = 0;
-    }
-}
 
 void Tracker::publishMapOverlapThread() {
     static ros::Rate r(nhp_.param("event_map_overlap_rate", 25));
+    
     static const float z0 = 1. / nh_.param("max_depth", 10.),
                        z1 = 1. / nh_.param("min_depth", .1), z_range = z1 - z0;
-
+    
     static cv::Mat cmap;
     if (!cmap.data) {
         cv::Mat gray(256, 1, CV_8U);
@@ -301,28 +304,24 @@ void Tracker::publishMapOverlapThread() {
 
     while (ros::ok()) {
         r.sleep();
-
+        // 空闲、无订阅、event_rate_ noise_rate_
         if (idle_ || pub.getNumSubscribers() == 0 || event_rate_ < noise_rate_)
             continue;
-
+        
         cv::convertScaleAbs(1. - .25 * new_img_, ev_img, 255);
         cv::cvtColor(ev_img, img, cv::COLOR_GRAY2RGB);
 
         Eigen::Affine3f T_cam_w =
             (T_world_kf_ * T_kf_ref_ * T_ref_cam_).inverse();
-
         const int s = 2;
-
         for (const auto& P : map_local_->points) {
             Eigen::Vector3f p = T_cam_w * Eigen::Vector3f(P.x, P.y, P.z);
             p[0] = p[0] / p[2] * fx_ + cx_;
             p[1] = p[1] / p[2] * fy_ + cy_;
-
             int x = std::round(s * p[0]), y = std::round(s * p[1]);
             float z = p[2];
-
             if (x < 0 || x >= s * width_ || y < 0 || y >= s * height_) continue;
-
+            // 按深度比例和圆圈 画图 
             cv::Vec3b c = cmap.at<cv::Vec3b>(
                 std::min(255., std::max(255. * (1. / z - z0) / z_range, 0.)));
             cv::circle(img, cv::Point(x, y), 2, cv::Scalar(c[0], c[1], c[2]),
@@ -331,7 +330,6 @@ void Tracker::publishMapOverlapThread() {
 
         std_msgs::Header header;
         header.stamp = events_[cur_ev_].ts;
-
         sensor_msgs::ImagePtr msg =
             cv_bridge::CvImage(header, "bgr8", img).toImageMsg();
         pub.publish(msg);
@@ -339,33 +337,39 @@ void Tracker::publishMapOverlapThread() {
 }
 
 void Tracker::publishTF() {
+    // 
     Eigen::Affine3f T_world_cam = T_world_kf_ * T_kf_ref_ * T_ref_cam_;
+    
     tf::Transform pose_tf;
     tf::transformEigenToTF(T_world_cam.cast<double>(), pose_tf);
     tf::StampedTransform new_pose(pose_tf, events_[cur_ev_ + frame_size_].ts,
                                   world_frame_id_, "dvs_evo_raw");
     poses_.push_back(new_pose);
+    // send
     tf_pub_.sendTransform(new_pose);
 
     tf::StampedTransform filtered_pose;
     if (getFilteredPose(filtered_pose)) {
         filtered_pose.frame_id_ = world_frame_id_;
         filtered_pose.child_frame_id_ = frame_id_;
+        // send
         tf_pub_.sendTransform(filtered_pose);
         poses_filtered_.push_back(filtered_pose);
-
         publishPose();
     }
 }
 
 void Tracker::publishPose() {
+    
     const tf::StampedTransform& T_world_cam = poses_.back();
-
+    // getOrigin getRotation
     const tf::Vector3& p = T_world_cam.getOrigin();
     const tf::Quaternion& q = T_world_cam.getRotation();
     geometry_msgs::PoseStampedPtr msg_pose(new geometry_msgs::PoseStamped);
+    
     msg_pose->header.stamp = T_world_cam.stamp_;
     msg_pose->header.frame_id = frame_id_;
+    
     msg_pose->pose.position.x = p.x();
     msg_pose->pose.position.y = p.y();
     msg_pose->pose.position.z = p.z();
@@ -424,40 +428,42 @@ bool Tracker::getFilteredPose(tf::StampedTransform& pose) {
     const Quaternion q_mean = q0 * T.getRotation();
 
     tf::StampedTransform filtered_pose;
+    
     filtered_pose.setOrigin(tf::Vector3(t_mean[0], t_mean[1], t_mean[2]));
+    
     filtered_pose.setRotation(
         tf::Quaternion(q_mean.x(), q_mean.y(), q_mean.z(), q_mean.w()));
     filtered_pose.stamp_ = ros::Time(P[6]);
-
     pose = filtered_pose;
     return true;
 }
 
 void Tracker::estimateTrajectory() {
+    
     static const size_t max_event_rate = nhp_.param("max_event_rate", 8000000),
                         events_per_kf = nhp_.param("events_per_kf", 100000);
 
     std::lock_guard<std::mutex> lock(data_mutex_);
 
     while (true) {
+        // 不够估计 break
         if (cur_ev_ + std::max(step_size_, frame_size_) > events_.size()) break;
-
+        // 间隔太多 更新地图（更新位置和有效点）
         if (cur_ev_ - kf_ev_ >= events_per_kf) updateMap();
-
         if (idle_) break;
 
         size_t frame_end = cur_ev_ + frame_size_;
-
         // Skip frame if event rate below noise rate
-        double frameduration =
-            (events_[frame_end].ts - events_[cur_ev_].ts).toSec();
-        event_rate_ =
-            std::round(static_cast<double>(frame_size_) / frameduration);
+        // 这段帧的时间
+        double frameduration = (events_[frame_end].ts - events_[cur_ev_].ts).toSec();
+        event_rate_ = std::round(static_cast<double>(frame_size_) / frameduration);
+        // 太少 太多 都跳过一部分事件 
         if (event_rate_ < noise_rate_) {
             LOG(WARNING) << "Event rate below NOISE RATE. Skipping frame.";
             cur_ev_ += step_size_;
             continue;
         }
+        
         if (event_rate_ > max_event_rate) {
             LOG(WARNING) << "Event rate above MAX EVENT RATE. Skipping frame.";
             cur_ev_ += step_size_;
@@ -468,12 +474,13 @@ void Tracker::estimateTrajectory() {
 #ifdef TRACKING_PERF
         // Performance analysis
         static const size_t perf_interval = 2000000;
+        // static只初始化一次
         static double time_elapsed = 0., last_ts = events_[cur_ev_].ts.toSec();
-
         if (events_processed > perf_interval) {
+            // 处理时间 time_processed 是第一个和最后一个事件
+            // 执行时间 time_elapsed 是 执行时间
             double cur_ts = events_[cur_ev_].ts.toSec(),
                    time_processed = cur_ts - last_ts;
-
             LOG(INFO) << "   Poses/s: "
                       << static_cast<double>(poses_generated) / time_elapsed;
             LOG(INFO) << " Pose rate: "
@@ -483,7 +490,7 @@ void Tracker::estimateTrajectory() {
             LOG(INFO) << "Event rate: "
                       << static_cast<double>(events_processed) / time_processed;
             LOG(WARNING) << " RT factor: " << time_processed / time_elapsed;
-
+            // 几个静态量 方便函数
             events_processed = 0;
             poses_generated = 0;
             time_elapsed = 0;
@@ -491,17 +498,21 @@ void Tracker::estimateTrajectory() {
         }
         TIMER_START(t1);
 #endif
-
+        // cur_ev_  ~ cur_ev_ + frame_size_
+        // 生成当前帧和金字塔
         drawEvents(events_.begin() + cur_ev_, events_.begin() + frame_end,
                    new_img_);
         cv::buildPyramid(new_img_, pyr_new_, pyramid_levels_);
+        // Tracks frame updating the transformation at each pyramid_levels_ and for a maximum of max_iterations_
         trackFrame();
-
+        // x = ref to cur 
+        // T_ref_cam_更新
         T_ref_cam_ *= SE3::exp(-x_).matrix();
-
+        // T_ref_cam 在while第二条语句updatemap处重置
+        // 不需要重置时，仅仅再这个基础上叠加
         publishTF();
+        
         cur_ev_ += step_size_;
-
 #ifdef TRACKING_PERF
         {
             TIMER_STOP(t1, t2, duration);
@@ -509,7 +520,6 @@ void Tracker::estimateTrajectory() {
             LOG(INFO) << "Tracking trajectory required: " << duration << "ms";
         }
 #endif
-
         events_processed += step_size_;
         ++poses_generated;
     }
