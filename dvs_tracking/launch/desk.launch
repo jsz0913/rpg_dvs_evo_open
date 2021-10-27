@@ -11,6 +11,7 @@
     <param name="world_frame_id" value="/world"/>
     <param name="dvs_bootstrap_frame_id" value="/camera_0" />
     <param name="dvs_frame_id" value="/dvs_evo" />
+	<!-- <目前是没有读取到话题的可以试试 /> -->
     <!-- <remap from="camera_info" to="/dvs/camera_info" /> -->
     <param name="min_depth" value="0.4" />
     <param name="max_depth" value="5" />
