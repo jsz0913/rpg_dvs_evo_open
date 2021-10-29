@@ -11,6 +11,8 @@ namespace depth_from_defocus {
 // TODO: scope the actual benefit of using this pattern compared to inheritance
 // (no polymorphism needed..)
 
+ // 一条线上的深度采样  
+   
 template <class DerivedDepthVector>
 /**
  * Stores a set of data associations index <-> depth
@@ -82,6 +84,8 @@ class DepthVector {
         return derived().depthToCellIndex(depth);
     }
 
+
+
     /**
      * DSI util function: from depth to cell value
      *
@@ -90,6 +94,7 @@ class DepthVector {
      * @see depthToCellIndex
      */
     float depthToCell(float depth) { return derived().depthToCell(depth); }
+
 
     /**
      * Get the DepthVector container
@@ -124,9 +129,10 @@ class LinearDepthVector : public DepthVector<LinearDepthVector> {
         : DepthVector(min_depth, max_depth, num_depth_cells) {}
 
     void init() {
+        // 每深度的cells
         depth_to_cell_idx_multiplier_ =
             (float)((num_depth_cells_ - 1) / (max_depth_ - min_depth_));
-
+        // vec_ 将深度均分
         vec_.resize(num_depth_cells_);
         for (size_t i = 0; i < num_depth_cells_; ++i) {
             vec_[i] = min_depth_ + (float)i / depth_to_cell_idx_multiplier_;
@@ -134,7 +140,8 @@ class LinearDepthVector : public DepthVector<LinearDepthVector> {
     }
 
     float cellIndexToDepth(size_t i) { return vec_[i]; }
-
+    
+    //
     size_t depthToCellIndex(float depth) {
         return (size_t)((depth - min_depth_) * depth_to_cell_idx_multiplier_ +
                         0.5);
@@ -166,9 +173,9 @@ class InverseDepthVector : public DepthVector<InverseDepthVector> {
             vec_[i] = inv_max_depth_ + (float)i / depth_to_cell_idx_multiplier_;
         }
     }
-
+    // 得到的真实深度
     float cellIndexToDepth(size_t i) { return 1.f / vec_[i]; }
-
+    // 得到的真实深度
     size_t depthToCellIndex(float depth) {
         return (size_t)((1.f / depth - inv_max_depth_) *
                             depth_to_cell_idx_multiplier_ +
