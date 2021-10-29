@@ -19,6 +19,7 @@ template <class DerivedDepthVector>
 class DepthVector {
    public:
     DerivedDepthVector& derived() {
+         // 将 自己 给转换成 指针 
         return static_cast<DerivedDepthVector&>(*this);
     }
 
@@ -45,7 +46,7 @@ class DepthVector {
         min_depth_ = min_depth;
         max_depth_ = max_depth;
         if (min_depth_ > max_depth_) std::swap(min_depth_, max_depth_);
-
+         // 继承类的初始化
         derived().init();
     }
 
@@ -56,9 +57,11 @@ class DepthVector {
      */
     inline size_t size() const { return vec_.size(); }
 
+    // 通过索引得到深度 其值 为 min_depth_ max_depth_ 的插值
+    // cellIndexToDepth    depthToCellIndex 
     /**
      * DSI util function: from cell index to depth
-     *
+     * 
      * The depth axis is evenly divided in DepthVector::Size cells, and
      * ranges within DepthVector::min_depth_ and DepthVector::max_depth_. The
      * conversion is a linear interpolation.
@@ -66,7 +69,6 @@ class DepthVector {
      * @param i Cell index in the discrete depth axis
      */
     float cellIndexToDepth(size_t i) { return derived().cellIndexToDepth(i); }
-
     /**
      * DSI util function: from depth to cell index
      *
@@ -104,6 +106,7 @@ class DepthVector {
 
    protected:
     std::vector<float> vec_;
+    // Number of descrete cells in the depth axis 个数 
     size_t num_depth_cells_;
     float min_depth_;
     float max_depth_;
