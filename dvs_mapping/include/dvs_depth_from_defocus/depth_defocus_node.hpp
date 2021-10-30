@@ -20,6 +20,8 @@
 #include "dvs_msgs/Event.h"
 #include "dvs_msgs/EventArray.h"
 #include "evo_utils/camera.hpp"
+
+//
 #include "evo_utils/geometry.hpp"
 
 // #define MAPPING_PERF  ///< to easily measure code for time of execution
@@ -39,12 +41,15 @@ typedef float Vote;
  * Other commands are ignored
  *
  * MAPPING: listening to incoming events and mapping them
+ 
  * "update" -> updates and publishes the map, and clear event queue
  * @see resetVoxelGrid, processEventQueue, synthesizeAndPublishDepth,
  * publishGlobalMap and clearEventQueue
+ 
  * "reset" -> cleans map and reset the mapping thread
  * @see resetMapper
- * "disable_map_expansion" -> state transition to IDLE (no more map updates) and
+
+* "disable_map_expansion" -> state transition to IDLE (no more map updates) and
  * resets map
  * @see resetMapper
  *
