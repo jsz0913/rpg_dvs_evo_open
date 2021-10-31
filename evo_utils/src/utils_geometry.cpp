@@ -21,6 +21,7 @@ T median(std::vector<T>& list) {
     return list[middle];
 }
 
+// 取出行列符合 且 在mask范围内（为1）的 像素值
 /**
  * Safely access pixel value in image
  *
