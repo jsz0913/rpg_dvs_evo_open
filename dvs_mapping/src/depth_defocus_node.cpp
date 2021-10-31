@@ -24,6 +24,7 @@ namespace depth_from_defocus {
 using namespace evo_utils::geometry;
 using namespace evo_utils::camera;
 
+// 只读一次，相机信息处理部分
 void DepthFromDefocusNode::cameraInfoCallback(
     const sensor_msgs::CameraInfo::ConstPtr& msg) {
     static bool got_camera_info = false;
@@ -42,17 +43,12 @@ void DepthFromDefocusNode::postCameraLoaded() {
     cv::Size full_resolution = dvs_cam_.fullResolution();
     width_ = full_resolution.width;
     height_ = full_resolution.height;
-
-    const float fov_virtual_cam_deg =
-        rpg_common_ros::param<float>(nh_, "fov_virtual_camera_deg", 0.0);
-
+    // 虚拟相机的参数
+    const float fov_virtual_cam_deg = rpg_common_ros::param<float>(nh_, "fov_virtual_camera_deg", 0.0);
     virtual_width_ = rpg_common_ros::param<int>(nh_, "virtual_width", width_);
-
-    virtual_height_ =
-        rpg_common_ros::param<int>(nh_, "virtual_height", height_);
-
+    virtual_height_ = rpg_common_ros::param<int>(nh_, "virtual_height", height_);
+    // 
     float f_virtual_cam_;
-
     if (fov_virtual_cam_deg == 0.) {
         f_virtual_cam_ = dvs_cam_.fx();
     } else {
@@ -62,10 +58,11 @@ void DepthFromDefocusNode::postCameraLoaded() {
     }
     LOG(INFO) << "Focal length of virtual camera: " << f_virtual_cam_
               << " pixels";
+    
     virtual_cam_ = PinholeCamera(
         virtual_width_, virtual_height_, f_virtual_cam_, f_virtual_cam_,
         0.5 * (float)virtual_width_, 0.5 * (float)virtual_height_);
-
+    // 原本相机的内参
     K_ << dvs_cam_.fx(), 0.f, dvs_cam_.cx(), 0.f, dvs_cam_.fy(), dvs_cam_.cy(),
         0.f, 0.f, 1.f;
 
@@ -73,6 +70,23 @@ void DepthFromDefocusNode::postCameraLoaded() {
     resetMapper();
 }
 
+// precomputed_rectified_points_ 用 dvs_cam_ 矫正
+void DepthFromDefocusNode::precomputeRectifiedPoints() {
+    precomputed_rectified_points_ = Eigen::Matrix2Xf(2, height_ * width_);
+    for (int y = 0; y < height_; y++) {
+        for (int x = 0; x < width_; ++x) {
+            cv::Point2d rectified_point =
+                dvs_cam_.rectifyPoint(cv::Point2d(x, y));
+            precomputed_rectified_points_.col(y * width_ + x) =
+                Eigen::Vector2f(rectified_point.x, rectified_point.y);
+        }
+    }
+}
+
+    
+    
+    
+    
 DepthFromDefocusNode::DepthFromDefocusNode(
     const ros::NodeHandle& nh, const ros::NodeHandle& pnh,
     const image_geometry::PinholeCameraModel& cam)
@@ -83,13 +97,13 @@ DepthFromDefocusNode::DepthFromDefocusNode(
       dvs_cam_(cam),
       pc_(new PointCloud),
       pc_global_(new PointCloud) {
+    
     radius_search_ = rpg_common_ros::param<float>(pnh_, "radius_search", 0.05);
     min_num_neighbors_ =
         rpg_common_ros::param<int>(pnh_, "min_num_neighbors", 3);
-
     median_filter_size_ =
         rpg_common_ros::param<int>(pnh_, "median_filter_size", 7);
-
+          
     regular_frame_id_ =
         rpg_common_ros::param(nh_, "dvs_frame_id", std::string("dvs"));
     bootstrap_frame_id_ =
@@ -100,6 +114,7 @@ DepthFromDefocusNode::DepthFromDefocusNode(
 
     tf_ = std::make_shared<tf::Transformer>(true, ros::Duration(10000.0));
 
+    
     tf_sub_ = nh_.subscribe("tf", 0, &DepthFromDefocusNode::tfCallback, this);
     event_sub_ = nh_.subscribe("events", 0,
                                &DepthFromDefocusNode::processEventArray, this);
@@ -107,33 +122,35 @@ DepthFromDefocusNode::DepthFromDefocusNode(
                                 &DepthFromDefocusNode::remoteKeyCallback, this);
     copilot_sub_ = nh_.subscribe("/evo/copilot_remote", 0,
                                  &DepthFromDefocusNode::copilotCallback, this);
-
+    // PointCloud
     pub_pc_ = pnh_.advertise<PointCloud>("pointcloud", 1);
     pc_->header.frame_id = world_frame_id_;
-
+    // PointCloud
     pub_pc_global_ = pnh_.advertise<PointCloud>("pointcloud_global", 1);
     pc_global_->header.frame_id = world_frame_id_;
-
+    // dvs_slam_msgs::VoxelGrid
     pub_voxel_grid_ = pnh_.advertise<dvs_slam_msgs::VoxelGrid>("voxel_grid", 1);
-
+    // events_to_recreate_kf_
     events_to_recreate_kf_ =
         rpg_common_ros::param<int>(pnh_, "events_to_recreate_kf", 2000000);
 
     camera_info_sub_ = nh_.subscribe(
         "camera_info", 1, &DepthFromDefocusNode::cameraInfoCallback, this);
-
+    // 同样两次
     postCameraLoaded();
 
     auto_trigger_ = rpg_common_ros::param<bool>(pnh_, "auto_trigger", false);
     if (auto_trigger_) state_ = MAPPING;
 }
 
+// callback
 void DepthFromDefocusNode::copilotCallback(const std_msgs::Bool& msg) {
     frame_id_ = (msg.data) ? regular_frame_id_ : bootstrap_frame_id_;
     LOG(INFO) << "Mapping switched copilot to " << frame_id_;
 }
 
 void DepthFromDefocusNode::tfCallback(const tf::tfMessage::ConstPtr& tf_msg) {
+    // 空闲时不订阅
     if (state_ == IDLE /* && !auto_trigger_*/) {
         return;
     }
@@ -141,7 +158,9 @@ void DepthFromDefocusNode::tfCallback(const tf::tfMessage::ConstPtr& tf_msg) {
     for (const geometry_msgs::TransformStamped& transform_stamped_msg :
          tf_msg->transforms) {
         tf::StampedTransform t;
+        // geometry_msgs::TransformStamped ->  tf::StampedTransform
         tf::transformStampedMsgToTF(transform_stamped_msg, t);
+        // Add transform information to the tf data structure.
         tf_->setTransform(t);
 
         // LOG(INFO) << transform_stamped_msg.child_frame_id << " " << frame_id_
@@ -153,7 +172,7 @@ void DepthFromDefocusNode::tfCallback(const tf::tfMessage::ConstPtr& tf_msg) {
             //     state_ = MAPPING;
             //     return;  // there are no events collected yet
             // }
-
+            // 找到 接近当前位姿的下标
             while (newest_tracked_event_ < event_queue_.size() &&
                    event_queue_[newest_tracked_event_ + 1].ts <
                        transform_stamped_msg.header.stamp)
@@ -171,32 +190,13 @@ void DepthFromDefocusNode::tfCallback(const tf::tfMessage::ConstPtr& tf_msg) {
 
             if (auto_trigger_ && (newest_tracked_event_ - current_event_ >
                                   events_to_recreate_kf_)) {
+                // 更新发送
                 update();
                 auto_trigger_ = false;
                 frame_id_ = regular_frame_id_;
             }
         }
     }
-}
-
-void DepthFromDefocusNode::update() {
-    resetVoxelGrid();
-    processEventQueue(true);
-    synthesizeAndPublishDepth();
-    publishGlobalMap();
-
-    last_kf_update_event_ = current_event_;
-    clearEventQueue();
-}
-
-void DepthFromDefocusNode::resetMapper() {
-    event_queue_.clear();
-    tf_->clear();
-    pc_->clear();
-    pc_global_->clear();
-    setupVoxelGrid();
-    current_event_ = newest_tracked_event_ = last_kf_update_event_ = 0;
-    T_ref_w_.setIdentity();
 }
 
 void DepthFromDefocusNode::remoteKeyCallback(
@@ -224,6 +224,7 @@ void DepthFromDefocusNode::remoteKeyCallback(
                 LOG(INFO) << "Switching mapper to IDLE mode. Will stop "
                              "treating 'update' requests";
                 resetMapper();
+                // 
                 state_ = IDLE;
             }
             break;
@@ -244,7 +245,54 @@ void DepthFromDefocusNode::remoteKeyCallback(
     }
 }
 
-void DepthFromDefocusNode::processEventQueue(bool reset) {
+
+void DepthFromDefocusNode::processEventArray(
+    const dvs_msgs::EventArray::ConstPtr& event_array) {
+    if (state_ == IDLE) {
+        return;
+    }
+
+    for (const dvs_msgs::Event& e : event_array->events)
+        event_queue_.push_back(e);
+
+    // Add initial pose
+    static bool sent_initial_pose = false;
+    if (!sent_initial_pose) {
+        tf::StampedTransform T(tf::Transform::getIdentity(), event_queue_[0].ts,
+                               world_frame_id_, frame_id_);
+        tf_->setTransform(T);
+        sent_initial_pose = true;
+    }
+}
+
+    
+//////////////////      UPDATE  ////////////////////
+
+void DepthFromDefocusNode::update() {
+    resetVoxelGrid();
+    processEventQueue(true);
+    synthesizeAndPublishDepth();
+    publishGlobalMap();
+
+    last_kf_update_event_ = current_event_;
+    clearEventQueue();
+}
+
+void DepthFromDefocusNode::resetMapper() {
+    event_queue_.clear();
+    tf_->clear();
+    pc_->clear();
+    pc_global_->clear();
+    setupVoxelGrid();
+    current_event_ = newest_tracked_event_ = last_kf_update_event_ = 0;
+    T_ref_w_.setIdentity();
+}
+
+    
+ 
+    
+    
+ void DepthFromDefocusNode::processEventQueue(bool reset) {
     static const size_t skip_batches_normal =
                             rpg_common_ros::param<int>(pnh_, "skip_batches", 0),
                         skip_batches_reset = rpg_common_ros::param<int>(
@@ -255,20 +303,26 @@ void DepthFromDefocusNode::processEventQueue(bool reset) {
                             pnh_, "frame_size", 1024),
                         min_batch_size = rpg_common_ros::param<int>(
                             pnh_, "min_batch_size", 20000);
-
+    // frame_size	number of events to aggregate when computing new ma
+    // min_batch_size	minimum number of new events required for a map update
+    // skip_batches	amount of batches of events to skip during optimization
+    // skip_batches_for_reset	amount of batches of events to skip during optimization after a reset
+     
+     
     // Performance measurement
     static const size_t perf_interval = 1000000;
     static size_t events_processed = 0;
     static double last_ts = event_queue_[current_event_].ts.toSec(),
                   time_evolved = 0;
-
+    // size_t current_event_;         next event to process
+    // size_t newest_tracked_event_;  first event for which the position is unknown
+    // 将要处理的事件数 current_event_ ~ newest_tracked_event_
     const size_t n_events = newest_tracked_event_ - current_event_;
-
+    // 
     if (n_events < min_batch_size) return;
-
+    // 根据事件速率 再调整 优化时 要跳的数目
     size_t skip_batches = (reset) ? skip_batches_reset : skip_batches_normal;
-
-    // Adapt skip_batches to max_event_rate
+    // 不reset时 ，Adapt skip_batches to max_event_rate
     const double duration = (event_queue_[newest_tracked_event_].ts -
                              event_queue_[current_event_].ts)
                                 .toSec();
@@ -278,6 +332,7 @@ void DepthFromDefocusNode::processEventQueue(bool reset) {
         //    LOG(WARNING) << "Adapt skip_batches to: " << skip_batches;
     }
 
+     
     static std::vector<Eigen::Vector4f> events;
     static std::vector<Eigen::Vector3f> centers;
     events.clear();
@@ -296,53 +351,58 @@ void DepthFromDefocusNode::processEventQueue(bool reset) {
 
     while (current_event_ + (skip_batches + 1) * frame_size <
            newest_tracked_event_) {
+        
         evo_utils::geometry::Transformation T_w_cur, T_ref_cur;
+        // 线性插值 得出 current_event_ + frame_size / 2 位置的 位姿
         getPoseAt(event_queue_[current_event_ + frame_size / 2].ts, T_w_cur);
+        // T_ref_w_
         T_ref_cur = T_ref_w_ * T_w_cur;
-
         const evo_utils::geometry::Transformation T_cur_ref =
             T_ref_cur.inverse();
+        
         const Eigen::Matrix3f R = T_cur_ref.getRotationMatrix().cast<float>();
         const Eigen::Vector3f t = T_cur_ref.getPosition().cast<float>();
 
         // Project the points on plane at distance z0
+        // Planar homography  (H_z0)^-1 that maps a point in the reference view to the event camera through plane Z = Z0 (Eq. (8) in the IJCV paper)
+        // 比论文多乘z0 这样映射到 reference view 的 z0 平面 而不是 1 平面
+        // 注意：Hz0 实际上是相机坐标系下的变化
+        //       Hz0 inv ：reference view to the event camera
+
         const float z0 = raw_depths_vec_[0];
         Eigen::Matrix3f R_corr = R;
         R_corr *= z0;
         R_corr.col(2) += t;
-
+        // res坐标系下的位置
         centers.push_back(-R.transpose() * t);
-
+        // DVS camera   ： K_
+        // virtual_cam_ ： Kinv_ （由dvs视距决定）
         Eigen::Matrix3f H_cur_ref = K_ * R_corr * virtual_cam_.Kinv_;
-
         Eigen::Matrix3f H_ref_cur = H_cur_ref.inverse();
+        
         Eigen::Matrix4f H_ref_cur_4x4;
         H_ref_cur_4x4.block<3, 3>(0, 0) = H_ref_cur;
         H_ref_cur_4x4.col(3).setZero();
         H_ref_cur_4x4.row(3).setZero();
-
+        // For each frame_size, precompute the warped event locations according to Eq. (11) in the IJCV paper.
         for (size_t i = 0; i != frame_size; ++i) {
             const dvs_msgs::Event& e = event_queue_[current_event_];
             Eigen::Vector4f p;
-
+            // 用 dvs 内参矫正的
             p.head<2>() = precomputed_rectified_points_.col(e.y * width_ + e.x);
             p[2] = 1.;
             p[3] = 0.;
-
             p = H_ref_cur_4x4 * p;
             p /= p[2];
             p[2] = 1.;
-
             events.push_back(p);
-
             ++num_events_processed;
             ++current_event_;
-
 #ifdef DEBUG_SHOW_FAKE_FRAMES
             integrated_img.at<uchar>(e.y, e.x) = 255;
 #endif
         }
-
+        // 更新current_event_，使用了第一个frame_size 跳过了skip_batches个
         current_event_ += skip_batches * frame_size;
 
 #ifdef DEBUG_SHOW_FAKE_FRAMES
@@ -350,10 +410,11 @@ void DepthFromDefocusNode::processEventQueue(bool reset) {
         cv::waitKey(10);
         integrated_img = cv::Mat::zeros(height_, width_, CV_8U);
 #endif
-    }
+    }// end while
 
-    if (centers.size() == 0) return;
-
+    // 还有这种情况
+     if (centers.size() == 0) return;
+    // 
     projectEventsToVoxelGrid(events, centers);
 
 #ifdef MAPPING_PERF
@@ -378,22 +439,32 @@ void DepthFromDefocusNode::processEventQueue(bool reset) {
 #endif
 }
 
+    
+// It maps events from plane Z0 to all the planes Zi of the DSI using Eq. (15)
+// and then votes for the corresponding voxel using bilinear voting.
 void DepthFromDefocusNode::projectEventsToVoxelGrid(
     const std::vector<Eigen::Vector4f>& events,
     const std::vector<Eigen::Vector3f>& centers) {
+    
+     // For efficiency reasons, we split each packet into batches of N events each //
+    // which allows to better exploit the L1 cache
     static const int N = 128;
     typedef Eigen::Array<float, N, 1> Arrayf;
 
     const size_t frame_size = events.size() / centers.size();
     const float z0 = raw_depths_vec_[0];
 
+    // 一个相机 一个 frame_size = N * batch 个事件 
 #pragma omp parallel for if (events.size() >= 20000)
+    // 不同深度平面的循环
     for (size_t layer = 0; layer < raw_depths_vec_.size(); ++layer) {
+        // 每一层上，遍历所有事件
         const Eigen::Vector4f* pe = &events[0];
-        Vote* pgrid =
-            &ref_voxel_grid_[layer * virtual_width_ * virtual_height_];
-
+        // ref_voxel_grid_ 存有所有 
+        Vote* pgrid = &ref_voxel_grid_[layer * virtual_width_ * virtual_height_];
+        //  
         for (size_t frame = 0; frame != centers.size(); ++frame) {
+            
             const Eigen::Vector3f& C = centers[frame];
             const float zi = (float)raw_depths_vec_[layer],
                         a = z0 * (zi - C[2]),
@@ -404,19 +475,19 @@ void DepthFromDefocusNode::projectEventsToVoxelGrid(
                         d = zi * (z0 - C[2]);
 
             // Update voxel grid now, N events per iteration
+            // 一个相机上有frame_size个，现在又分 
             for (size_t batch = 0; batch != frame_size / N; ++batch) {
                 Arrayf X, Y;
                 for (size_t i = 0; i != N; ++i) {
                     X[i] = pe[i][0];
                     Y[i] = pe[i][1];
                 }
-
                 X = (X * a + bx) / d;
                 Y = (Y * a + by) / d;
-
+                // pgrid 为 深度平面上某个点
                 for (size_t i = 0; i != N; ++i)
                     voteForCellBilinear(X[i], Y[i], pgrid);
-
+                // 滑过 N 个 events
                 pe += N;
             }
         }
@@ -424,12 +495,12 @@ void DepthFromDefocusNode::projectEventsToVoxelGrid(
 }
 
 void DepthFromDefocusNode::resetVoxelGrid() {
+    // 重置体素，意味着需要更新地图 
     std::fill(ref_voxel_grid_.begin(), ref_voxel_grid_.end(), 0);
 
     evo_utils::geometry::Transformation T_w_cur;
-
     ros::Time last_stamp = event_queue_[newest_tracked_event_].ts;
-
+    // 初始 next event to process
     current_event_ = (newest_tracked_event_ > events_to_recreate_kf_)
                          ? newest_tracked_event_ - events_to_recreate_kf_
                          : 0u;
@@ -440,7 +511,7 @@ void DepthFromDefocusNode::resetVoxelGrid() {
 
     LOG(INFO) << "Received a map creation request";
     LOG(INFO) << "Setting KF at time: " << last_stamp;
-
+    // 
     T_ref_w_ = T_w_cur.inverse();
 }
 
@@ -449,6 +520,7 @@ DepthFromDefocusNode::~DepthFromDefocusNode() {
     publishGlobalMap();
 }
 
+// 初始化逆深度向量和体素
 void DepthFromDefocusNode::setupVoxelGrid() {
     evo_utils::geometry::Depth min_depth =
         rpg_common_ros::param<float>(nh_, "min_depth", 1.0);
@@ -482,40 +554,7 @@ void DepthFromDefocusNode::setupVoxelGrid() {
                            0);
 }
 
-void DepthFromDefocusNode::processEventArray(
-    const dvs_msgs::EventArray::ConstPtr& event_array) {
-    if (state_ == IDLE) {
-        return;
-    }
 
-    for (const dvs_msgs::Event& e : event_array->events)
-        event_queue_.push_back(e);
-
-    // Add initial pose
-    static bool sent_initial_pose = false;
-    if (!sent_initial_pose) {
-        tf::StampedTransform T(tf::Transform::getIdentity(), event_queue_[0].ts,
-                               world_frame_id_, frame_id_);
-        tf_->setTransform(T);
-        sent_initial_pose = true;
-    }
-}
-
-void DepthFromDefocusNode::clearEventQueue() {
-    static size_t event_history_size_ = 5000000;
-
-    size_t last_event = std::min(current_event_, last_kf_update_event_);
-
-    if (last_event > event_history_size_) {
-        size_t remove_events = last_event - event_history_size_;
-
-        event_queue_.erase(event_queue_.begin(),
-                           event_queue_.begin() + remove_events);
-        current_event_ -= remove_events;
-        last_kf_update_event_ -= remove_events;
-        newest_tracked_event_ -= remove_events;
-    }
-}
 
 void DepthFromDefocusNode::synthesizeAndPublishDepth() {
     //  LOG(INFO) << "Synthesize depth from voxel grid";
@@ -533,33 +572,6 @@ void DepthFromDefocusNode::synthesizeAndPublishDepth() {
     publishDepthmap(depth, confidence_mask_);
 }
 
-bool DepthFromDefocusNode::getPoseAt(const ros::Time& t,
-                                     evo_utils::geometry::Transformation& T) {
-    std::string* error_msg = new std::string();
-    if (!tf_->canTransform(world_frame_id_, frame_id_, t, error_msg)) {
-        LOG(WARNING) << t.toNSec() << " : " << *error_msg;
-        return false;
-    } else {
-        tf::StampedTransform tr;
-        tf_->lookupTransform(world_frame_id_, frame_id_, t, tr);
-
-        tf::transformTFToKindr(tr, &T);
-
-        return true;
-    }
-}
-
-void DepthFromDefocusNode::precomputeRectifiedPoints() {
-    precomputed_rectified_points_ = Eigen::Matrix2Xf(2, height_ * width_);
-    for (int y = 0; y < height_; y++) {
-        for (int x = 0; x < width_; ++x) {
-            cv::Point2d rectified_point =
-                dvs_cam_.rectifyPoint(cv::Point2d(x, y));
-            precomputed_rectified_points_.col(y * width_ + x) =
-                Eigen::Vector2f(rectified_point.x, rectified_point.y);
-        }
-    }
-}
 
 /* // Generic way to try different focus measures, but slow.
 void DepthFromDefocusNode::synthesizePointCloudFromVoxelGridContrast(cv::Mat&
@@ -1007,6 +1019,38 @@ void DepthFromDefocusNode::publishGlobalMap() {
     }
     if (skipped++ >= skip_first)
         accumulation_cnt = (accumulation_cnt + 1) % accumulate_once_every;
+    
+}
+    
+void DepthFromDefocusNode::clearEventQueue() {
+    static size_t event_history_size_ = 5000000;
+
+    size_t last_event = std::min(current_event_, last_kf_update_event_);
+
+    if (last_event > event_history_size_) {
+        size_t remove_events = last_event - event_history_size_;
+        event_queue_.erase(event_queue_.begin(),
+                           event_queue_.begin() + remove_events);
+        current_event_ -= remove_events;
+        last_kf_update_event_ -= remove_events;
+        newest_tracked_event_ -= remove_events;
+}
+        
+bool DepthFromDefocusNode::getPoseAt(const ros::Time& t,
+                                     evo_utils::geometry::Transformation& T) {
+    
+    std::string* error_msg = new std::string();
+    
+    if (!tf_->canTransform(world_frame_id_, frame_id_, t, error_msg)) {
+        LOG(WARNING) << t.toNSec() << " : " << *error_msg;
+        return false;
+    } else {
+        tf::StampedTransform tr;
+        tf_->lookupTransform(world_frame_id_, frame_id_, t, tr);
+        tf::transformTFToKindr(tr, &T);
+        return true;
+    }
+}
 }
 
 }  // namespace depth_from_defocus
